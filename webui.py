@@ -5,8 +5,10 @@ os.environ["PYTHONUTF8"] = "1"
 import argparse
 import tempfile
 import threading
+from datetime import datetime
 from pathlib import Path
 
+import av
 import gradio as gr
 import torch
 
@@ -22,6 +24,7 @@ from ltx_pipelines.utils.media_io import encode_video
 DEFAULT_CHECKPOINT = "checkpoints/ltx-2.3-22b-distilled.safetensors"
 DEFAULT_UPSAMPLER = "checkpoints/ltx-2.3-spatial-upscaler-x2-1.0.safetensors"
 DEFAULT_GEMMA = "checkpoints/gemma-3-12b-it-qat-q4_0-unquantized"
+DEFAULT_OUTPUT_DIR = "output"
 
 # ---------------------------------------------------------------------------
 # B. tqdm monkey-patching for Gradio progress
@@ -71,9 +74,10 @@ def _patch_tqdm() -> None:
 
 
 # ---------------------------------------------------------------------------
-# C. Generation function
+# C. Helper functions
 # ---------------------------------------------------------------------------
 pipeline: DistilledPipeline | None = None
+output_dir: Path = Path(DEFAULT_OUTPUT_DIR)
 
 
 def _seconds_to_frames(seconds: float, fps: float) -> int:
@@ -84,6 +88,34 @@ def _seconds_to_frames(seconds: float, fps: float) -> int:
     return k * 8 + 1
 
 
+def _extract_last_frame(video_path: str) -> str | None:
+    """Extract the last frame of a video and save it as a PNG."""
+    if not video_path:
+        return None
+    container = av.open(video_path)
+    stream = container.streams.video[0]
+    last_frame = None
+    for frame in container.decode(stream):
+        last_frame = frame
+    container.close()
+    if last_frame is None:
+        return None
+    img = last_frame.to_image()
+    frame_path = Path(video_path).with_suffix(".last_frame.png")
+    img.save(str(frame_path))
+    return str(frame_path)
+
+
+def _make_output_path() -> str:
+    """Generate a timestamped output path in the output directory."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return str(output_dir / f"ltx2_{ts}.mp4")
+
+
+# ---------------------------------------------------------------------------
+# D. Generation function
+# ---------------------------------------------------------------------------
 @torch.inference_mode()
 def generate(
     prompt: str,
@@ -132,16 +164,16 @@ def generate(
         )
 
         video_chunks_number = get_video_chunks_number(num_frames, tiling_config)
-        output_path = tempfile.mktemp(suffix=".mp4", prefix="ltx2_")
+        out = _make_output_path()
         encode_video(
             video_iter,
             fps=frame_rate,
             audio=audio,
-            output_path=output_path,
+            output_path=out,
             video_chunks_number=video_chunks_number,
         )
 
-        return output_path
+        return out
 
     except torch.cuda.OutOfMemoryError:
         raise gr.Error("CUDA out of memory — try reducing resolution or frame count.")
@@ -151,7 +183,7 @@ def generate(
 
 
 # ---------------------------------------------------------------------------
-# D. Gradio UI
+# E. Gradio UI
 # ---------------------------------------------------------------------------
 def build_ui() -> gr.Blocks:
     with gr.Blocks(title="LTX-2 Video Generator") as demo:
@@ -175,32 +207,46 @@ def build_ui() -> gr.Blocks:
 
                 seed = gr.Number(value=42, label="Seed", precision=0)
                 generate_btn = gr.Button("Generate", variant="primary", size="lg")
+                use_last_frame_btn = gr.Button("Use last frame as start image", interactive=False)
 
             with gr.Column(scale=1):
                 video_output = gr.Video(label="Generated Video")
 
+        # After generation, enable the "use last frame" button
         generate_btn.click(
             fn=generate,
             inputs=[prompt, start_image, end_image, height, width, duration, seed, frame_rate],
             outputs=video_output,
+        ).then(
+            fn=lambda: gr.update(interactive=True),
+            outputs=use_last_frame_btn,
+        )
+
+        # Extract last frame and set as start image
+        use_last_frame_btn.click(
+            fn=_extract_last_frame,
+            inputs=video_output,
+            outputs=start_image,
         )
 
     return demo
 
 
 # ---------------------------------------------------------------------------
-# E. Entry point
+# F. Entry point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="LTX-2 Web UI")
     parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT)
     parser.add_argument("--upsampler", default=DEFAULT_UPSAMPLER)
     parser.add_argument("--gemma", default=DEFAULT_GEMMA)
+    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Directory for generated videos")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=7860)
     parser.add_argument("--share", action="store_true")
     args = parser.parse_args()
 
+    output_dir = Path(args.output_dir)
     _patch_tqdm()
 
     print("Loading pipeline (this takes ~30 seconds)...")
@@ -212,7 +258,7 @@ if __name__ == "__main__":
         device=torch.device("cuda"),
         quantization=QuantizationPolicy.fp8_cast(),
     )
-    print("Pipeline loaded!")
+    print(f"Pipeline loaded! Videos will be saved to: {output_dir.resolve()}")
 
     demo = build_ui()
     demo.queue(max_size=1)
