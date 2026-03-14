@@ -58,6 +58,42 @@ Download the following models from the [LTX-2.3 HuggingFace repository](https://
   * [`LTX-2-19b-LoRA-Camera-Control-Jib-Up`](https://huggingface.co/Lightricks/LTX-2-19b-LoRA-Camera-Control-Jib-Up) - [Download](https://huggingface.co/Lightricks/LTX-2-19b-LoRA-Camera-Control-Jib-Up/resolve/main/ltx-2-19b-lora-camera-control-jib-up.safetensors)
   * [`LTX-2-19b-LoRA-Camera-Control-Static`](https://huggingface.co/Lightricks/LTX-2-19b-LoRA-Camera-Control-Static) - [Download](https://huggingface.co/Lightricks/LTX-2-19b-LoRA-Camera-Control-Static/resolve/main/ltx-2-19b-lora-camera-control-static.safetensors)
 
+### Gradio Web UI
+
+A browser-based interface for video generation with progress tracking, image conditioning, and multi-video chaining.
+
+**Setup (Windows with CUDA GPU):**
+
+```bash
+# Install environment
+uv sync --frozen
+
+# Install PyTorch with CUDA support (uv installs CPU-only by default)
+.venv/Scripts/python.exe -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128 --force-reinstall
+
+# Install Gradio
+.venv/Scripts/python.exe -m pip install gradio
+```
+
+**Download models** into `checkpoints/`:
+
+```bash
+# LTX-2 distilled model + spatial upscaler (public)
+huggingface-cli download Lightricks/LTX-2.3 ltx-2.3-22b-distilled.safetensors --local-dir checkpoints
+huggingface-cli download Lightricks/LTX-2.3 ltx-2.3-spatial-upscaler-x2-1.0.safetensors --local-dir checkpoints
+
+# Gemma text encoder (requires HuggingFace login + license acceptance)
+huggingface-cli download google/gemma-3-12b-it-qat-q4_0-unquantized --local-dir checkpoints/gemma-3-12b-it-qat-q4_0-unquantized
+```
+
+**Start the Web UI:**
+
+```bash
+PYTHONUTF8=1 .venv/Scripts/python.exe webui.py
+```
+
+Then open http://127.0.0.1:7860. Options: `--output-dir`, `--host`, `--port`, `--share`.
+
 ### Available Pipelines
 
 * **[TI2VidTwoStagesPipeline](packages/ltx-pipelines/src/ltx_pipelines/ti2vid_two_stages.py)** - Production-quality text/image-to-video with 2x upsampling (recommended)

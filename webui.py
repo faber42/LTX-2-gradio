@@ -3,6 +3,7 @@ import os
 os.environ["PYTHONUTF8"] = "1"
 
 import argparse
+import subprocess
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -253,13 +254,37 @@ def generate_multi(
         _progress_state.prefix = ""
 
 
-def _format_multi_results(video_paths: list[str]) -> str:
+def _concatenate_videos(video_paths: list[str]) -> str:
+    """Concatenate multiple videos into one using ffmpeg stream copy (no re-encoding)."""
+    import imageio_ffmpeg
+
+    ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+    concat_path = _make_output_path("_combined")
+
+    # Write ffmpeg concat list
+    list_file = Path(concat_path).with_suffix(".txt")
+    with open(list_file, "w", encoding="utf-8") as f:
+        for p in video_paths:
+            escaped = str(Path(p).resolve()).replace("\\", "/").replace("'", "'\\''")
+            f.write(f"file '{escaped}'\n")
+
+    subprocess.run(
+        [ffmpeg_bin, "-y", "-f", "concat", "-safe", "0", "-i", str(list_file), "-c", "copy", concat_path],
+        check=True,
+        capture_output=True,
+    )
+    list_file.unlink(missing_ok=True)
+    return concat_path
+
+
+def _format_multi_results(video_paths: list[str], concat_path: str) -> str:
     """Format the list of generated video paths as a readable summary."""
     if not video_paths:
         return ""
     lines = [f"Generated {len(video_paths)} videos:"]
     for i, p in enumerate(video_paths, 1):
         lines.append(f"  {i}. {p}")
+    lines.append(f"\nCombined: {concat_path}")
     return "\n".join(lines)
 
 
@@ -326,14 +351,15 @@ def build_ui() -> gr.Blocks:
                         multi_gen_btn = gr.Button("Generate All", variant="primary", size="lg")
 
                     with gr.Column(scale=1):
-                        multi_log = gr.Textbox(label="Generated Videos", lines=6, interactive=False)
-                        multi_preview = gr.Video(label="Last Generated Video")
+                        multi_log = gr.Textbox(label="Generated Videos", lines=8, interactive=False)
+                        multi_preview = gr.Video(label="Combined Video")
 
                 def _run_multi_and_preview(prompts_text, start_img, end_img, h, w, dur, s, fps, progress=gr.Progress()):
                     paths = generate_multi(prompts_text, start_img, end_img, h, w, dur, s, fps, progress)
-                    log = _format_multi_results(paths)
-                    last_video = paths[-1] if paths else None
-                    return log, last_video
+                    progress(0, desc="Concatenating videos...")
+                    concat_path = _concatenate_videos(paths)
+                    log = _format_multi_results(paths, concat_path)
+                    return log, concat_path
 
                 multi_gen_btn.click(
                     fn=_run_multi_and_preview,
