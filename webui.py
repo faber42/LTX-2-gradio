@@ -76,13 +76,22 @@ def _patch_tqdm() -> None:
 pipeline: DistilledPipeline | None = None
 
 
+def _seconds_to_frames(seconds: float, fps: float) -> int:
+    """Convert duration in seconds to the nearest valid frame count (8k+1)."""
+    raw = int(round(seconds * fps))
+    # Snap to nearest 8k+1 (minimum 9)
+    k = max(1, round((raw - 1) / 8))
+    return k * 8 + 1
+
+
 @torch.inference_mode()
 def generate(
     prompt: str,
-    image: str | None,
+    start_image: str | None,
+    end_image: str | None,
     height: int,
     width: int,
-    num_frames: int,
+    duration: float,
     seed: int,
     frame_rate: float,
     progress: gr.Progress = gr.Progress(),
@@ -90,9 +99,7 @@ def generate(
     if not prompt or not prompt.strip():
         raise gr.Error("Bitte einen Prompt eingeben.")
 
-    # Snap num_frames to valid 8k+1
-    num_frames = int(num_frames)
-    num_frames = ((num_frames - 1) // 8) * 8 + 1
+    num_frames = _seconds_to_frames(duration, frame_rate)
     height = int(height)
     width = int(width)
     seed = int(seed)
@@ -102,12 +109,14 @@ def generate(
     _progress_state.tqdm_count = 0
 
     try:
-        # Image conditioning
+        # Image conditioning (start and/or end frame)
         images: list[ImageConditioningInput] = []
-        if image is not None:
-            images = [ImageConditioningInput(path=image, frame_idx=0, strength=1.0)]
+        if start_image is not None:
+            images.append(ImageConditioningInput(path=start_image, frame_idx=0, strength=1.0))
+        if end_image is not None:
+            images.append(ImageConditioningInput(path=end_image, frame_idx=num_frames - 1, strength=1.0))
 
-        progress(0, desc="Starting generation...")
+        progress(0, desc=f"Generating {num_frames} frames ({duration:.1f}s)...")
 
         tiling_config = TilingConfig.default()
         video_iter, audio = pipeline(
@@ -151,14 +160,17 @@ def build_ui() -> gr.Blocks:
         with gr.Row():
             with gr.Column(scale=1):
                 prompt = gr.Textbox(label="Prompt", lines=4, placeholder="Describe your video...")
-                image = gr.Image(label="Start Image (optional)", type="filepath")
+
+                with gr.Row():
+                    start_image = gr.Image(label="Start Image (optional)", type="filepath")
+                    end_image = gr.Image(label="End Image (optional)", type="filepath")
 
                 with gr.Row():
                     height = gr.Slider(256, 2048, value=1536, step=64, label="Height")
                     width = gr.Slider(256, 2048, value=1024, step=64, label="Width")
 
                 with gr.Row():
-                    num_frames = gr.Slider(9, 257, value=121, step=8, label="Frames (8k+1)")
+                    duration = gr.Slider(0.5, 11, value=5, step=0.5, label="Duration (seconds)")
                     frame_rate = gr.Slider(1, 60, value=24, step=1, label="FPS")
 
                 seed = gr.Number(value=42, label="Seed", precision=0)
@@ -169,7 +181,7 @@ def build_ui() -> gr.Blocks:
 
         generate_btn.click(
             fn=generate,
-            inputs=[prompt, image, height, width, num_frames, seed, frame_rate],
+            inputs=[prompt, start_image, end_image, height, width, duration, seed, frame_rate],
             outputs=video_output,
         )
 
