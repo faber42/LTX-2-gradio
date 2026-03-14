@@ -5,6 +5,7 @@ os.environ["PYTHONUTF8"] = "1"
 import argparse
 import subprocess
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -222,7 +223,9 @@ def generate_multi(
     _progress_state.prefix = ""
 
     results: list[str] = []
+    durations: list[float] = []
     current_start_image = start_image
+    t_total_start = time.monotonic()
 
     try:
         for i, prompt in enumerate(prompts):
@@ -237,14 +240,17 @@ def generate_multi(
             this_start = current_start_image
             this_end = end_image if i == total - 1 else None
 
+            t_start = time.monotonic()
             out = _generate_single(prompt, this_start, this_end, height, width, num_frames, seed + i, frame_rate)
+            durations.append(time.monotonic() - t_start)
             results.append(out)
 
             # Extract last frame for next video's start
             if i < total - 1:
                 current_start_image = _extract_last_frame(out)
 
-        return results
+        total_duration = time.monotonic() - t_total_start
+        return results, durations, total_duration
 
     except torch.cuda.OutOfMemoryError:
         raise gr.Error("CUDA out of memory — try reducing resolution or frame count.")
@@ -277,14 +283,26 @@ def _concatenate_videos(video_paths: list[str]) -> str:
     return concat_path
 
 
-def _format_multi_results(video_paths: list[str], concat_path: str) -> str:
+def _format_duration(seconds: float) -> str:
+    """Format seconds as m:ss or h:mm:ss."""
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
+def _format_multi_results(
+    video_paths: list[str], durations: list[float], total_duration: float, concat_path: str,
+) -> str:
     """Format the list of generated video paths as a readable summary."""
     if not video_paths:
         return ""
     lines = [f"Generated {len(video_paths)} videos:"]
-    for i, p in enumerate(video_paths, 1):
-        lines.append(f"  {i}. {p}")
+    for i, (p, d) in enumerate(zip(video_paths, durations), 1):
+        lines.append(f"  {i}. {p}  ({_format_duration(d)})")
     lines.append(f"\nCombined: {concat_path}")
+    lines.append(f"Total time: {_format_duration(total_duration)}")
     return "\n".join(lines)
 
 
@@ -355,10 +373,10 @@ def build_ui() -> gr.Blocks:
                         multi_preview = gr.Video(label="Combined Video")
 
                 def _run_multi_and_preview(prompts_text, start_img, end_img, h, w, dur, s, fps, progress=gr.Progress()):
-                    paths = generate_multi(prompts_text, start_img, end_img, h, w, dur, s, fps, progress)
+                    paths, durations, total_dur = generate_multi(prompts_text, start_img, end_img, h, w, dur, s, fps, progress)
                     progress(0, desc="Concatenating videos...")
                     concat_path = _concatenate_videos(paths)
-                    log = _format_multi_results(paths, concat_path)
+                    log = _format_multi_results(paths, durations, total_dur, concat_path)
                     return log, concat_path
 
                 multi_gen_btn.click(
