@@ -129,6 +129,7 @@ def _generate_single(
     num_frames: int,
     seed: int,
     frame_rate: float,
+    enhance_prompt: bool = False,
 ) -> str:
     """Generate a single video. Returns the output file path."""
     images: list[ImageConditioningInput] = []
@@ -147,7 +148,7 @@ def _generate_single(
         frame_rate=frame_rate,
         images=images,
         tiling_config=tiling_config,
-        enhance_prompt=False,
+        enhance_prompt=enhance_prompt,
     )
 
     video_chunks_number = get_video_chunks_number(num_frames, tiling_config)
@@ -174,6 +175,7 @@ def generate(
     duration: float,
     seed: int,
     frame_rate: float,
+    enhance: bool = False,
     progress: gr.Progress = gr.Progress(),
 ) -> str:
     if not prompt or not prompt.strip():
@@ -188,7 +190,7 @@ def generate(
 
     try:
         progress(0, desc=f"Generating {num_frames} frames ({duration:.1f}s)...")
-        return _generate_single(prompt, start_image, end_image, height, width, num_frames, seed, frame_rate)
+        return _generate_single(prompt, start_image, end_image, height, width, num_frames, seed, frame_rate, enhance)
     except torch.cuda.OutOfMemoryError:
         raise gr.Error("CUDA out of memory — try reducing resolution or frame count.")
     finally:
@@ -209,8 +211,9 @@ def generate_multi(
     duration: float,
     seed: int,
     frame_rate: float,
+    enhance: bool = False,
     progress: gr.Progress = gr.Progress(),
-) -> list[str]:
+):
     prompts = [p.strip() for p in prompts_text.strip().split("\n") if p.strip()]
     if not prompts:
         raise gr.Error("Bitte mindestens einen Prompt eingeben (ein Prompt pro Zeile).")
@@ -241,7 +244,7 @@ def generate_multi(
             this_end = end_image if i == total - 1 else None
 
             t_start = time.monotonic()
-            out = _generate_single(prompt, this_start, this_end, height, width, num_frames, seed + i, frame_rate)
+            out = _generate_single(prompt, this_start, this_end, height, width, num_frames, seed + i, frame_rate, enhance)
             durations.append(time.monotonic() - t_start)
             results.append(out)
 
@@ -323,6 +326,7 @@ def build_ui() -> gr.Blocks:
                     duration = gr.Slider(0.5, 11, value=5, step=0.5, label="Duration (seconds)")
                     frame_rate = gr.Slider(1, 60, value=24, step=1, label="FPS")
                 seed = gr.Number(value=42, label="Seed", precision=0)
+                enhance_prompt = gr.Checkbox(value=False, label="Enhance prompt (Gemma rewrites your prompt)")
 
         with gr.Tabs():
             # ---- Single Video Tab ----
@@ -341,7 +345,7 @@ def build_ui() -> gr.Blocks:
 
                 single_gen_btn.click(
                     fn=generate,
-                    inputs=[single_prompt, single_start, single_end, height, width, duration, seed, frame_rate],
+                    inputs=[single_prompt, single_start, single_end, height, width, duration, seed, frame_rate, enhance_prompt],
                     outputs=single_video,
                 ).then(
                     fn=lambda: gr.update(interactive=True),
@@ -372,8 +376,8 @@ def build_ui() -> gr.Blocks:
                         multi_log = gr.Textbox(label="Generated Videos", lines=8, interactive=False)
                         multi_preview = gr.Video(label="Combined Video")
 
-                def _run_multi_and_preview(prompts_text, start_img, end_img, h, w, dur, s, fps, progress=gr.Progress()):
-                    paths, durations, total_dur = generate_multi(prompts_text, start_img, end_img, h, w, dur, s, fps, progress)
+                def _run_multi_and_preview(prompts_text, start_img, end_img, h, w, dur, s, fps, enh, progress=gr.Progress()):
+                    paths, durations, total_dur = generate_multi(prompts_text, start_img, end_img, h, w, dur, s, fps, enh, progress)
                     progress(0, desc="Concatenating videos...")
                     concat_path = _concatenate_videos(paths)
                     log = _format_multi_results(paths, durations, total_dur, concat_path)
@@ -381,7 +385,7 @@ def build_ui() -> gr.Blocks:
 
                 multi_gen_btn.click(
                     fn=_run_multi_and_preview,
-                    inputs=[multi_prompts, multi_start, multi_end, height, width, duration, seed, frame_rate],
+                    inputs=[multi_prompts, multi_start, multi_end, height, width, duration, seed, frame_rate, enhance_prompt],
                     outputs=[multi_log, multi_preview],
                 )
 
