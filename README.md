@@ -94,6 +94,38 @@ PYTHONUTF8=1 .venv/Scripts/python.exe webui.py
 
 Then open http://127.0.0.1:7860. Options: `--output-dir`, `--host`, `--port`, `--share`.
 
+### REST API Server
+
+A REST API for triggering video generation from other machines in the local network. Jobs are queued and processed sequentially. Generated videos are temporary and deleted after download.
+
+**Start the server:**
+
+```bash
+.venv/Scripts/python.exe videogen_rest_server.py
+```
+
+The server listens on `0.0.0.0:8020`. Options: `--host`, `--port`, `--checkpoint`, `--upsampler`, `--gemma`.
+
+FastAPI auto-docs are available at `http://<host>:8020/docs`.
+
+**Generate a video from a client machine:**
+
+```bash
+python videogen_rest_client.py --host 192.168.1.100 --prompt "A cat walking through a garden"
+python videogen_rest_client.py --host 192.168.1.100 --prompt "A sunset" --duration 3.0 --output sunset.mp4
+python videogen_rest_client.py --host 192.168.1.100 --prompt "A person waving" --start-image photo.png
+```
+
+Full parameter list: `--prompt`, `--output`, `--host`, `--port`, `--height`, `--width`, `--duration`, `--fps`, `--seed`, `--enhance-prompt`, `--start-image`, `--end-image`.
+
+**Run the smoke test:**
+
+```bash
+.venv/Scripts/python.exe videogen_rest_test_client.py --test
+```
+
+See [videogen_rest_api.md](videogen_rest_api.md) for the full API reference.
+
 ### Available Pipelines
 
 * **[TI2VidTwoStagesPipeline](packages/ltx-pipelines/src/ltx_pipelines/ti2vid_two_stages.py)** - Production-quality text/image-to-video with 2x upsampling (recommended)
