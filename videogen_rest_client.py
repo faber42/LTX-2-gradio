@@ -1,12 +1,40 @@
-"""Client for the LTX-2 Video Generation REST API."""
+"""Client for the LTX-2 Video Generation REST API.
+
+No external dependencies — uses only the Python standard library.
+"""
 
 import argparse
 import base64
+import json
 import os
+import shutil
 import sys
 import time
+import urllib.error
+import urllib.request
 
-import requests
+
+def _get_json(url: str, timeout: float = 30.0) -> dict:
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        return json.loads(resp.read())
+
+
+def _post_json(url: str, payload: dict, timeout: float = 30.0) -> tuple[int, dict]:
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        return e.code, {"detail": e.read().decode()}
+
+
+def _download(url: str, output_path: str, timeout: float = 300.0) -> int:
+    req = urllib.request.Request(url)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with open(output_path, "wb") as f:
+            shutil.copyfileobj(resp, f)
+    return os.path.getsize(output_path)
 
 
 def main() -> None:
@@ -40,11 +68,9 @@ Examples:
 
     # Health check
     try:
-        r = requests.get(f"{base}/health", timeout=5)
-        r.raise_for_status()
-        info = r.json()
+        info = _get_json(f"{base}/health", timeout=5)
         print(f"Server: {info['device']} | Jobs completed: {info['jobs_completed']}")
-    except requests.ConnectionError:
+    except (urllib.error.URLError, OSError):
         print(f"ERROR: Cannot connect to {args.host}:{args.port}. Is the server running?")
         sys.exit(1)
 
@@ -78,19 +104,17 @@ Examples:
             payload["end_image_base64"] = base64.b64encode(f.read()).decode()
 
     # Submit job
-    r = requests.post(f"{base}/jobs", json=payload)
-    if r.status_code != 202:
-        print(f"ERROR: Server returned {r.status_code}: {r.text}")
+    status_code, data = _post_json(f"{base}/jobs", payload)
+    if status_code != 202:
+        print(f"ERROR: Server returned {status_code}: {data}")
         sys.exit(1)
-    job_id = r.json()["job_id"]
+    job_id = data["job_id"]
     print(f"Job submitted: {job_id}")
 
     # Poll for completion
     last_status = None
     while True:
-        r = requests.get(f"{base}/jobs/{job_id}")
-        r.raise_for_status()
-        data = r.json()
+        data = _get_json(f"{base}/jobs/{job_id}")
         status = data["status"]
 
         if status != last_status:
@@ -106,13 +130,7 @@ Examples:
         time.sleep(args.poll_interval)
 
     # Download video
-    r = requests.get(f"{base}/jobs/{job_id}/video", stream=True)
-    r.raise_for_status()
-    with open(args.output, "wb") as f:
-        for chunk in r.iter_content(chunk_size=8192):
-            f.write(chunk)
-
-    size = os.path.getsize(args.output)
+    size = _download(f"{base}/jobs/{job_id}/video", args.output)
     print(f"Saved: {args.output} ({size:,} bytes)")
 
 
