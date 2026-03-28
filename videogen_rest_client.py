@@ -111,15 +111,22 @@ Examples:
     job_id = data["job_id"]
     print(f"Job submitted: {job_id}")
 
-    # Poll for completion
-    last_status = None
+    # Poll for completion with progress display
+    last_line = ""
     while True:
         data = _get_json(f"{base}/jobs/{job_id}")
         status = data["status"]
+        progress = data.get("progress")
 
-        if status != last_status:
-            print(f"  Status: {status}")
-            last_status = status
+        if status == "running" and progress and progress.get("stage"):
+            p = progress
+            line = f"  [{p['stage_index']+1}/{p['total_stages']}] {p['stage']} - step {p['step']}/{p['total_steps']}"
+        else:
+            line = f"  {status}"
+
+        if line != last_line:
+            print(line)
+            last_line = line
 
         if status == "completed":
             break

@@ -28,8 +28,67 @@ from ltx_core.quantization import QuantizationPolicy
 from ltx_pipelines.distilled import DistilledPipeline
 from ltx_pipelines.utils.args import ImageConditioningInput
 from ltx_pipelines.utils.media_io import encode_video
+import ltx_pipelines.utils.media_io as _media_io_module
+import ltx_pipelines.utils.samplers as _samplers_module
 
 logger = logging.getLogger("videogen_rest_server")
+
+# ---------------------------------------------------------------------------
+# tqdm monkey-patching for progress tracking (adapted from webui.py)
+# ---------------------------------------------------------------------------
+_STAGE_LABELS = [
+    "Stage 1 - Denoising",
+    "Stage 2 - Upscaling",
+    "Stage 3 - Decoding video",
+]
+
+_progress_state = threading.local()
+
+
+class _ProgressInfo:
+    """Mutable progress container shared between worker and API endpoint."""
+    def __init__(self) -> None:
+        self.stage: str = ""
+        self.step: int = 0
+        self.total_steps: int = 0
+        self.stage_index: int = 0
+        self.total_stages: int = len(_STAGE_LABELS)
+
+
+class _ApiTqdm:
+    """Drop-in tqdm replacement that writes progress into _ProgressInfo."""
+
+    def __init__(self, iterable=None, total=None, **_kwargs: object) -> None:
+        self.iterable = iterable
+        self.total = total or (len(iterable) if hasattr(iterable, "__len__") else None)
+        self.n = 0
+
+        idx = getattr(_progress_state, "tqdm_count", 0)
+        _progress_state.tqdm_count = idx + 1
+        self.label = _STAGE_LABELS[idx] if idx < len(_STAGE_LABELS) else f"Processing ({idx})"
+        self.stage_index = idx
+
+    def __iter__(self):
+        progress: _ProgressInfo | None = getattr(_progress_state, "progress", None)
+        for item in self.iterable:
+            if progress is not None:
+                progress.stage = self.label
+                progress.step = self.n + 1
+                progress.total_steps = self.total or 0
+                progress.stage_index = self.stage_index
+            yield item
+            self.n += 1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        pass
+
+
+def _patch_tqdm() -> None:
+    _samplers_module.tqdm = _ApiTqdm
+    _media_io_module.tqdm = _ApiTqdm
 
 # ---------------------------------------------------------------------------
 # Default model paths (same as webui.py)
@@ -63,6 +122,14 @@ class JobRequest(BaseModel):
     end_image_base64: Optional[str] = None
 
 
+class ProgressResponse(BaseModel):
+    stage: str = ""
+    step: int = 0
+    total_steps: int = 0
+    stage_index: int = 0
+    total_stages: int = len(_STAGE_LABELS)
+
+
 class JobInfo(BaseModel):
     job_id: str
     status: JobStatus
@@ -71,6 +138,7 @@ class JobInfo(BaseModel):
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     error: Optional[str] = None
+    progress: Optional[ProgressResponse] = None
 
 
 class JobSubmitResponse(BaseModel):
@@ -99,6 +167,7 @@ _pipeline: DistilledPipeline | None = None
 _jobs: dict[str, JobInfo] = {}
 _job_params: dict[str, JobRequest] = {}
 _video_files: dict[str, Path] = {}
+_job_progress: dict[str, _ProgressInfo] = {}
 _lock = threading.Lock()
 _job_queue: queue.Queue[str | None] = queue.Queue()
 _temp_dir: Path | None = None
@@ -194,6 +263,13 @@ def _worker_loop() -> None:
             job.started_at = datetime.now(timezone.utc).isoformat()
             req = _job_params[job_id]
 
+        progress = _ProgressInfo()
+        with _lock:
+            _job_progress[job_id] = progress
+
+        _progress_state.tqdm_count = 0
+        _progress_state.progress = progress
+
         try:
             logger.info("Starting job %s: %s", job_id, req.prompt[:80])
             output_path = _generate_video(job_id, req)
@@ -201,6 +277,7 @@ def _worker_loop() -> None:
                 job.status = JobStatus.completed
                 job.completed_at = datetime.now(timezone.utc).isoformat()
                 _video_files[job_id] = output_path
+                _job_progress.pop(job_id, None)
                 _jobs_completed += 1
             logger.info("Completed job %s -> %s", job_id, output_path)
 
@@ -209,7 +286,11 @@ def _worker_loop() -> None:
                 job.status = JobStatus.failed
                 job.completed_at = datetime.now(timezone.utc).isoformat()
                 job.error = str(e)
+                _job_progress.pop(job_id, None)
             logger.exception("Job %s failed", job_id)
+        finally:
+            _progress_state.progress = None
+            _progress_state.tqdm_count = 0
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +306,9 @@ async def lifespan(app: FastAPI):
     # Create temp directory
     _temp_dir = Path(tempfile.mkdtemp(prefix="ltx2_api_"))
     logger.info("Temp directory: %s", _temp_dir)
+
+    # Patch tqdm for progress tracking
+    _patch_tqdm()
 
     # Load pipeline
     logger.info("Loading pipeline (this takes ~30 seconds)...")
@@ -281,8 +365,19 @@ def submit_job(req: JobRequest):
 def get_job(job_id: str):
     with _lock:
         job = _jobs.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Job not found")
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        prog = _job_progress.get(job_id)
+        if prog is not None:
+            job.progress = ProgressResponse(
+                stage=prog.stage,
+                step=prog.step,
+                total_steps=prog.total_steps,
+                stage_index=prog.stage_index,
+                total_stages=prog.total_stages,
+            )
+        else:
+            job.progress = None
     return job
 
 
