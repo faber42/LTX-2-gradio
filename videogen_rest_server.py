@@ -213,6 +213,11 @@ def _generate_video(job_id: str, req: JobRequest) -> Path:
         temp_images.append(img_path)
         images.append(ImageConditioningInput(path=str(img_path), frame_idx=num_frames - 1, strength=1.0))
 
+    # Free base64 image data from memory before heavy GPU work
+    req.start_image_base64 = None
+    req.end_image_base64 = None
+
+    torch.cuda.empty_cache()
     tiling_config = TilingConfig.default()
 
     video_iter, audio = _pipeline(
