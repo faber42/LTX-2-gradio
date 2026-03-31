@@ -47,9 +47,11 @@ Examples:
   %(prog)s --prompt "A sunset over the ocean" --duration 3.0 --output sunset.mp4
   %(prog)s --prompt "A person waving" --start-image photo.png --host 192.168.1.100
   %(prog)s --prompt "Slow motion water" --height 1024 --width 1536 --fps 24 --seed 123
+  %(prog)s --health --host 192.168.1.100
 """,
     )
-    parser.add_argument("--prompt", required=True, help="Text description of the video")
+    parser.add_argument("--prompt", default=None, help="Text description of the video")
+    parser.add_argument("--health", action="store_true", help="Check server connectivity and exit")
     parser.add_argument("--output", "-o", default="output.mp4", help="Output file path (default: output.mp4)")
     parser.add_argument("--host", default="localhost", help="Server hostname (default: localhost)")
     parser.add_argument("--port", type=int, default=8020, help="Server port (default: 8020)")
@@ -73,6 +75,13 @@ Examples:
     except (urllib.error.URLError, OSError):
         print(f"ERROR: Cannot connect to {args.host}:{args.port}. Is the server running?")
         sys.exit(1)
+
+    if args.health:
+        print("OK")
+        sys.exit(0)
+
+    if not args.prompt:
+        parser.error("--prompt is required (unless using --health)")
 
     # Build request
     payload: dict = {"prompt": args.prompt}
